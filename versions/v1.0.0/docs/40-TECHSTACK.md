@@ -1,8 +1,7 @@
 # 40-TECHSTACK — titipo-web
 
-STATUS: defined pending (target dikunci, implementasi menunggu).
-
-Mengacu: TitipO-TownHall v1.0.0
+> Versi: v1.0.0 | Status: disetujui | Menggantikan: -
+> Acuan: [TitipO-TownHall platform/versions/v1.0.0](https://github.com/Coding-Skuy/TitipO-TownHall/tree/main/platform/versions/v1.0.0) (BRD/PRD/FRD/FSD/SRS beku 2026-10-07).
 
 ## 1. Target stack
 
@@ -30,3 +29,8 @@ Aturan bisnis yang dijaga server: pesan maksimal 20.00, serah 06.00–08.00, fee
 - Hanya web admin; tidak ada checkout rumah tangga dan tidak ada layar vendor di web.
 - Tidak menghitung ulang fee dan grade di klien web untuk angka sah; angka sah dari server.
 - Dilarang pindah runtime atau menaikkan versi Bun 1.4.x, Svelte 5, Kit 2, TS 5.9.x tanpa PR.
+
+## 3. Kewajiban migrasi / drift
+
+- Tidak ada drift framework: `package.json` memakai Svelte 5, SvelteKit 2, adapter-node, TypeScript ~5.9, Vite 6; tidak ada Next.js atau React. Tidak ada migrasi framework yang wajib.
+- Kewajiban saat coding kickoff: kunci versi exact (saat ini masih rentang `^2.0.0`, `^5.0.0`, `^6.0.0`) dan commit `bun.lock`; `engines.bun` tetap `>=1.4.0 <1.5.0`.
