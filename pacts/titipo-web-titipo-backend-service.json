@@ -1,0 +1,354 @@
+{
+  "consumer": {
+    "name": "titipo-web"
+  },
+  "interactions": [
+    {
+      "description": "permintaan antrean kurasi vendor calon",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "ada vendor berstatus calon"
+        }
+      ],
+      "request": {
+        "headers": {
+          "Authorization": [
+            "Bearer token-uji-admin"
+          ]
+        },
+        "method": "GET",
+        "path": "/admin/vendor",
+        "query": {
+          "status": [
+            "calon"
+          ]
+        }
+      },
+      "response": {
+        "body": {
+          "content": {
+            "data": [
+              {
+                "id": "V-BUDI-002",
+                "nama": "Warung Budi",
+                "skor_kebersihan": 85,
+                "status": "calon"
+              }
+            ],
+            "lanjut": null
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.data": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type",
+                  "min": 1
+                }
+              ]
+            },
+            "$.data[*].id": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.data[*].nama": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.data[*].skor_kebersihan": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "integer"
+                }
+              ]
+            },
+            "$.data[*].status": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^(calon|aktif|prioritas|skors|keluar)$"
+                }
+              ]
+            },
+            "$.lanjut": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            }
+          }
+        },
+        "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "description": "permintaan antrean vendor oleh non-admin",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "token beraudiens bukan titipo atau peran bukan admin"
+        }
+      ],
+      "request": {
+        "headers": {
+          "Authorization": [
+            "Bearer token-uji-bukan-admin"
+          ]
+        },
+        "method": "GET",
+        "path": "/admin/vendor"
+      },
+      "response": {
+        "status": 403
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "description": "permintaan pantau pesanan harian",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "ada pesanan berstatus disiapkan"
+        }
+      ],
+      "request": {
+        "headers": {
+          "Authorization": [
+            "Bearer token-uji-admin"
+          ]
+        },
+        "method": "GET",
+        "path": "/admin/pesanan",
+        "query": {
+          "hari": [
+            "2026-01-07"
+          ],
+          "status": [
+            "disiapkan"
+          ]
+        }
+      },
+      "response": {
+        "body": {
+          "content": {
+            "agregat": {
+              "batal": 1,
+              "terlambat": 4,
+              "total": 132
+            },
+            "data": [
+              {
+                "id_vendor": "V-BUDI-002",
+                "kode": "T-2026-000112",
+                "ongkir": 5000,
+                "status": "disiapkan",
+                "total_bayar": 40000,
+                "total_item": 35000
+              }
+            ],
+            "lanjut": null
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.agregat.batal": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "integer"
+                }
+              ]
+            },
+            "$.agregat.terlambat": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "integer"
+                }
+              ]
+            },
+            "$.agregat.total": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "integer"
+                }
+              ]
+            },
+            "$.data": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type",
+                  "min": 1
+                }
+              ]
+            },
+            "$.data[*].id_vendor": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.data[*].kode": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^T-[0-9]{4}-[0-9]{6}$"
+                }
+              ]
+            },
+            "$.data[*].status": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.data[*].total_bayar": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "integer"
+                }
+              ]
+            },
+            "$.data[*].total_item": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "integer"
+                }
+              ]
+            },
+            "$.lanjut": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            }
+          }
+        },
+        "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "description": "permintaan status katalog cermin",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "snapshot katalog cermin tersedia"
+        }
+      ],
+      "request": {
+        "headers": {
+          "Authorization": [
+            "Bearer token-uji-admin"
+          ]
+        },
+        "method": "GET",
+        "path": "/admin/katalog-cermin"
+      },
+      "response": {
+        "body": {
+          "content": {
+            "diperbarui": "2026-01-07T04:00:00Z",
+            "jumlah_sku": 48,
+            "status": "ok",
+            "sumber": "lumbung"
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.diperbarui": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "format": "yyyy-MM-dd'T'HH:mm:ss'Z'",
+                  "match": "datetime"
+                }
+              ]
+            },
+            "$.jumlah_sku": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "integer"
+                }
+              ]
+            },
+            "$.status": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            }
+          }
+        },
+        "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    }
+  ],
+  "metadata": {
+    "pact-js": {
+      "version": "17.1.4"
+    },
+    "pactRust": {
+      "ffi": "0.5.8",
+      "models": "1.3.16"
+    },
+    "pactSpecification": {
+      "version": "4.0"
+    }
+  },
+  "provider": {
+    "name": "titipo-backend-service"
+  }
+}
