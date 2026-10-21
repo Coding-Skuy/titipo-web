@@ -1,0 +1,826 @@
+# Salinan spec dari titipo-backend-service/docs/api/openapi.yaml (sumber kebenaran = backend; perbarui dengan menyalin ulang).
+openapi: 3.1.0
+info:
+  title: API TitipO — ChefGenie
+  version: 1.0.0
+  summary: Kontrak HTTP TitipO v1.0.0 (titip belanja harian rumah tangga ke vendor terpercaya).
+  description: |
+    Kontrak diturunkan dari TitipO-TownHall `platform/versions/v1.0.0/FSD/30-kontrak.md`,
+    `produk/20-kontrak-api-KMP-mobile.md`, `produk/21-kontrak-api-web-bun.md`, dan
+    `pesanan/10-alur-titip-harian.md` §6. Dokumen beku menang bila ada perbedaan.
+
+    **Aturan umum**
+    - Format JSON UTF-8. Uang = integer rupiah. Berat = integer gram. Waktu = ISO-8601 UTC (tampil WIB hanya di UI).
+    - Semua POST membawa kunci idempoten ULID klien; pengiriman ulang yang sama mengembalikan 200 tanpa rekaman ganda.
+    - Server adalah penentu angka sah (total, fee, stok). Perhitungan di klien hanya pratinjau.
+    - Kode pesanan: `T-YYYY-NNNNNN` (contoh `T-2026-000112`).
+
+    **Aturan bisnis yang ditegakkan server**
+    - Pesan maksimal pukul 20.00, serah besok 06.00–08.00. Satu pesanan satu vendor. Maksimal 20 kg dan 50 baris per pesanan (lebih = 422).
+    - Ongkir flat Rp5.000 (Rp4.000 vendor + Rp1.000 kas TitipO); `total_bayar = total_item + ongkir`.
+    - Fee vendor 12% dari total item (+0,5% untuk vendor Prioritas); denda batal sepihak kurang dari 2 jam Rp15.000.
+    - Pokok dibayar ke Lumbung tiap Senin 09.00. Pesan di atas 50 kg per transaksi ditandai grosir pada event `transaksi.dibuat` ke Titeny.
+
+    **Autentikasi**
+    - JWT pengguna beraudiens `titipo` diterbitkan layanan auth Lumbung (login dan refresh dilakukan di Lumbung; TitipO tidak punya endpoint login). Klaim peran: `vendor`, `household`, `admin` (admin web juga `operasi`).
+    - Verifikasi lewat JWKS Lumbung (cache 10 menit, toleransi jam 60 detik). Audiens selain `titipo` ditolak 403.
+    - Panggilan server-ke-server titipo → lumbung memakai header `X-Titipo-Service-Key` (rotasi 90 hari, 2 kunci aktif 7 hari), hanya di server, tidak pernah di klien. Pengirim sinyal Pedaree memakai `X-Service-Key` (lihat skema keamanan).
+
+    **Event pesanan (outbox, bukan endpoint)**: `pesanan.dibuat`, `pesanan.dibayar`, `pesanan.dikonfirmasi`, `pesanan.diserahkan`, `pesanan.dialihkan`, `fee.dicairkan`, `konflik.dicatat` — lihat skema `EventPesanan`.
+  contact:
+    name: Tim TitipO
+    url: https://github.com/Coding-Skuy/TitipO-TownHall
+  license:
+    name: Hak cipta Coding-Skuy
+    identifier: LicenseRef-Proprietary
+externalDocs:
+  description: Dokumen beku TitipO v1.0.0 (FSD kontrak)
+  url: https://github.com/Coding-Skuy/TitipO-TownHall/blob/main/platform/versions/v1.0.0/FSD/30-kontrak.md
+servers:
+  - url: https://api.titipo.chefgenie.id/v1
+    description: Produksi (placeholder resmi)
+  - url: http://localhost:8080
+    description: Lokal
+tags:
+  - name: Sistem
+    description: Kesehatan layanan.
+  - name: Mobile - Rumah Tangga
+    description: Endpoint aplikasi KMP untuk rumah tangga (peran `household`).
+  - name: Mobile - Vendor
+    description: Endpoint aplikasi KMP untuk vendor (peran `vendor`); konfirmasi boleh antre luring.
+  - name: Admin
+    description: Endpoint web admin (peran `admin` untuk tulis, `operasi` boleh baca). Rate-limit 600 permintaan per menit per IP.
+  - name: Integrasi
+    description: Kontrak bilateral dengan divisi lain (Pedaree → TitipO).
+security:
+  - bearerAuth: []
+paths:
+  /healthz:
+    get:
+      tags: [Sistem]
+      operationId: cekSehat
+      summary: Cek kesehatan layanan
+      security: []
+      responses:
+        '200':
+          description: Layanan sehat.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, service]
+                properties:
+                  status: { type: string, const: ok }
+                  service: { type: string, examples: [titipo-backend-service] }
+        '500': { $ref: '#/components/responses/ErrorServer' }
+
+  /vendor-terdekat:
+    get:
+      tags: [Mobile - Rumah Tangga]
+      operationId: daftarVendorTerdekat
+      summary: Daftar vendor terdekat
+      description: Vendor aktif/prioritas dalam radius, diurut jarak. Perubahan status vendor muncul maksimal 1 menit (cache 60 detik).
+      parameters:
+        - { name: lat, in: query, required: true, schema: { type: number, minimum: -90, maximum: 90 }, example: -6.9175 }
+        - { name: lng, in: query, required: true, schema: { type: number, minimum: -180, maximum: 180 }, example: 107.6191 }
+        - { name: radius_km, in: query, schema: { type: integer, minimum: 1, default: 5 }, description: Radius pencarian dalam km (default 5). }
+      responses:
+        '200':
+          description: Daftar vendor.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/VendorRingkas' }
+              example:
+                data:
+                  - { id: V-SARI-001, nama: Warung Sari, jarak_km: 0.8, rating: 4.9, sisa_kuota: 12, prioritas: true }
+        '401': { $ref: '#/components/responses/Tidakterotorisasi' }
+        '403': { $ref: '#/components/responses/Dilarang' }
+        '422': { $ref: '#/components/responses/Validasi' }
+        '500': { $ref: '#/components/responses/ErrorServer' }
+
+  /katalog/{idVendor}:
+    get:
+      tags: [Mobile - Rumah Tangga]
+      operationId: katalogVendor
+      summary: Katalog vendor (snapshot tersinkron Lumbung)
+      description: Snapshot katalog disinkron dari Lumbung tiap 04.00. Bila umur snapshot lebih dari 24 jam, server mengembalikan 409 `KATALOG_KEDALUWARSA` dan tombol pesan di klien terkunci.
+      parameters:
+        - { name: idVendor, in: path, required: true, schema: { type: string }, example: V-SARI-001 }
+      responses:
+        '200':
+          description: Katalog.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Katalog' }
+        '401': { $ref: '#/components/responses/Tidakterotorisasi' }
+        '403': { $ref: '#/components/responses/Dilarang' }
+        '404': { $ref: '#/components/responses/TidakDitemukan' }
+        '409': { $ref: '#/components/responses/Konflik' }
+        '500': { $ref: '#/components/responses/ErrorServer' }
+
+  /pesanan:
+    post:
+      tags: [Mobile - Rumah Tangga]
+      operationId: buatPesanan
+      summary: Checkout pesanan (wajib online)
+      description: |
+        Membuat pesanan berstatus `menunggu_pembayaran`. Batas: 1 vendor, maksimal 20 kg dan 50 baris; SKU harus ada di snapshot katalog yang umurnya tidak lebih dari 24 jam; pesan hanya sampai pukul 20.00.
+        Pembayaran QRIS kedaluwarsa 15 menit.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PesananBaru' }
+            example:
+              id: 01JMB2Z9KQ0ABCD1234567890A
+              id_vendor: V-SARI-001
+              item:
+                - { sku_lumbung: LMB-BAYAM-001, jumlah_gram: 2000 }
+                - { sku_lumbung: LMB-TELUR-001, jumlah_gram: 1000 }
+      responses:
+        '200':
+          description: Pengiriman ulang dengan kunci idempoten sama; hasil identik, tanpa rekaman ganda.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PesananDibuat' }
+        '201':
+          description: Pesanan dibuat.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PesananDibuat' }
+              example: { kode: T-2026-000112, total_bayar: 52000, kedaluwarsa_bayar: '2026-01-06T13:15:00Z' }
+        '400': { $ref: '#/components/responses/Permintaan' }
+        '401': { $ref: '#/components/responses/Tidakterotorisasi' }
+        '403': { $ref: '#/components/responses/Dilarang' }
+        '404': { $ref: '#/components/responses/TidakDitemukan' }
+        '409': { $ref: '#/components/responses/Konflik' }
+        '422': { $ref: '#/components/responses/Validasi' }
+        '500': { $ref: '#/components/responses/ErrorServer' }
+
+  /pesanan/{kode}/bayar:
+    post:
+      tags: [Mobile - Rumah Tangga]
+      operationId: konfirmasiBayar
+      summary: Konfirmasi bayar QRIS
+      parameters:
+        - $ref: '#/components/parameters/KodePesanan'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id_gateway]
+              properties:
+                id_gateway: { type: string, description: ID transaksi gateway pembayaran., examples: [QR-67890] }
+      responses:
+        '200':
+          description: Pembayaran dicatat; menunggu konfirmasi vendor.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, const: menunggu_konfirmasi }
+        '400': { $ref: '#/components/responses/Permintaan' }
+        '401': { $ref: '#/components/responses/Tidakterotorisasi' }
+        '403': { $ref: '#/components/responses/Dilarang' }
+        '404': { $ref: '#/components/responses/TidakDitemukan' }
+        '409': { $ref: '#/components/responses/Konflik' }
+        '422': { $ref: '#/components/responses/Validasi' }
+        '500': { $ref: '#/components/responses/ErrorServer' }
+
+  /vendor/pesanan/{kode}/konfirmasi:
+    post:
+      tags: [Mobile - Vendor]
+      operationId: konfirmasiVendor
+      summary: Terima atau tolak pesanan (boleh antre luring)
+      description: |
+        Batas konfirmasi 30 menit; lewat batas, job `timeout-konfirmasi` (tiap 1 menit) mengalihkan ke vendor cadangan maksimal 2 kali lalu refund penuh H+1.
+        Saat luring, klien menyimpan ke antrean lalu mengirim ulang dengan `Idempotency-Key` yang sama.
+      parameters:
+        - $ref: '#/components/parameters/KodePesanan'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  title: Terima
+                  required: [terima]
+                  properties: { terima: { type: boolean, const: true } }
+                - type: object
+                  title: Tolak
+                  required: [terima, alasan]
+                  properties:
+                    terima: { type: boolean, const: false }
+                    alasan: { type: string, examples: [Stok habis] }
+      responses:
+        '200':
+          description: Konfirmasi dicatat (juga untuk pengiriman ulang idempoten).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { $ref: '#/components/schemas/StatusPesanan' }
+                  dikonfirmasi: { type: string, format: date-time }
+              example: { status: disiapkan, dikonfirmasi: '2026-01-06T12:55:00Z' }
+        '401': { $ref: '#/components/responses/Tidakterotorisasi' }
+        '403': { $ref: '#/components/responses/Dilarang' }
+        '404': { $ref: '#/components/responses/TidakDitemukan' }
+        '409': { $ref: '#/components/responses/Konflik' }
+        '422': { $ref: '#/components/responses/Validasi' }
+        '500': { $ref: '#/components/responses/ErrorServer' }
+
+  /vendor/pesanan/{kode}/serah:
+    post:
+      tags: [Mobile - Vendor]
+      operationId: serahPesanan
+      summary: Serah pesanan dengan foto bukti
+      description: Serah dalam jendela 06.00–08.00 (toleransi 15 menit). Foto wajib 1 per pesanan, JPEG maksimal 2 MB (klien mengompres sampai 800 KB); tanpa foto pesanan dianggap belum serah dan fee ditahan. Retensi foto 2 tahun.
+      parameters:
+        - $ref: '#/components/parameters/KodePesanan'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [foto]
+              properties:
+                foto: { type: string, format: binary, description: Foto JPEG maksimal 2 MB. }
+                waktu: { type: string, format: date-time, description: Waktu serah menurut perangkat. }
+            encoding:
+              foto: { contentType: image/jpeg }
+      responses:
+        '200':
+          description: Pesanan berstatus `diserahkan`.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, url_foto]
+                properties:
+                  status: { type: string, const: diserahkan }
+                  url_foto: { type: string, format: uri }
+              example: { status: diserahkan, url_foto: 'https://cdn.titipo.chefgenie.id/titipo-bukti/T-2026-000112.jpg' }
+        '400': { $ref: '#/components/responses/Permintaan' }
+        '401': { $ref: '#/components/responses/Tidakterotorisasi' }
+        '403': { $ref: '#/components/responses/Dilarang' }
+        '404': { $ref: '#/components/responses/TidakDitemukan' }
+        '409': { $ref: '#/components/responses/Konflik' }
+        '422': { $ref: '#/components/responses/Validasi' }
+        '500': { $ref: '#/components/responses/ErrorServer' }
+
+  /pesanan/{kode}/rating:
+    post:
+      tags: [Mobile - Rumah Tangga]
+      operationId: beriRating
+      summary: Beri rating pesanan
+      description: Rating maksimal 30 jam setelah serah; bila diam, pesanan otomatis `selesai` pada H+1 pukul 12.00.
+      parameters:
+        - $ref: '#/components/parameters/KodePesanan'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [bintang]
+              properties:
+                bintang: { type: integer, minimum: 1, maximum: 5 }
+                catatan: { type: string, maxLength: 200 }
+            example: { bintang: 5, catatan: Segar }
+      responses:
+        '200':
+          description: Rating dicatat.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { $ref: '#/components/schemas/StatusPesanan' }
+        '400': { $ref: '#/components/responses/Permintaan' }
+        '401': { $ref: '#/components/responses/Tidakterotorisasi' }
+        '403': { $ref: '#/components/responses/Dilarang' }
+        '404': { $ref: '#/components/responses/TidakDitemukan' }
+        '409': { $ref: '#/components/responses/Konflik' }
+        '422': { $ref: '#/components/responses/Validasi' }
+        '500': { $ref: '#/components/responses/ErrorServer' }
+
+  /admin/vendor:
+    get:
+      tags: [Admin]
+      operationId: adminDaftarVendor
+      summary: Antrean kurasi vendor
+      parameters:
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/StatusVendor' }, example: calon }
+        - $ref: '#/components/parameters/Batas'
+        - $ref: '#/components/parameters/Lanjut'
+      responses:
+        '200':
+          description: Daftar vendor.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, lanjut]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/VendorAdmin' }
+                  lanjut: { type: [string, 'null'] }
+              example:
+                data: [{ id: V-BUDI-002, nama: Warung Budi, status: calon, skor_kebersihan: 85, dokumen: [ktp.jpg, lapak1.jpg] }]
+                lanjut: null
+        '401': { $ref: '#/components/responses/Tidakterotorisasi' }
+        '403': { $ref: '#/components/responses/Dilarang' }
+        '429': { $ref: '#/components/responses/TerlaluBanyak' }
+        '500': { $ref: '#/components/responses/ErrorServer' }
+
+  /admin/vendor/{id}/verifikasi:
+    post:
+      tags: [Admin]
+      operationId: adminVerifikasiVendor
+      summary: Setujui atau tolak calon vendor
+      description: Syarat kurasi 5 syarat termasuk skor kebersihan minimal 80. Setuju mengubah `calon` menjadi `aktif`; tolak tetap `calon` dengan catatan. Dicatat di audit.
+      parameters:
+        - $ref: '#/components/parameters/IdVendor'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  title: Setuju
+                  required: [setuju, kuota_harian]
+                  properties:
+                    setuju: { type: boolean, const: true }
+                    kuota_harian: { type: integer, enum: [30, 60] }
+                - type: object
+                  title: Tolak
+                  required: [setuju, alasan]
+                  properties:
+                    setuju: { type: boolean, const: false }
+                    alasan: { type: string, examples: [Skor < 80] }
+      responses:
+        '200': { $ref: '#/components/responses/AksiAdminOk' }
+        '401': { $ref: '#/components/responses/Tidakterotorisasi' }
+        '403': { $ref: '#/components/responses/Dilarang' }
+        '404': { $ref: '#/components/responses/TidakDitemukan' }
+        '422': { $ref: '#/components/responses/Validasi' }
+        '429': { $ref: '#/components/responses/TerlaluBanyak' }
+        '500': { $ref: '#/components/responses/ErrorServer' }
+
+  /admin/vendor/{id}/skors:
+    post:
+      tags: [Admin]
+      operationId: adminSkorsVendor
+      summary: Skors vendor
+      description: Skors 3 atau 7 hari (tidak ada nilai lain di v1.0.0). Tiga kali skors dalam 90 hari berakibat keluar.
+      parameters:
+        - $ref: '#/components/parameters/IdVendor'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [hari, alasan]
+              properties:
+                hari: { type: integer, enum: [3, 7] }
+                alasan: { type: string }
+            example: { hari: 3, alasan: Terlambat 3x/minggu }
+      responses:
+        '200': { $ref: '#/components/responses/AksiAdminOk' }
+        '401': { $ref: '#/components/responses/Tidakterotorisasi' }
+        '403': { $ref: '#/components/responses/Dilarang' }
+        '404': { $ref: '#/components/responses/TidakDitemukan' }
+        '422': { $ref: '#/components/responses/Validasi' }
+        '429': { $ref: '#/components/responses/TerlaluBanyak' }
+        '500': { $ref: '#/components/responses/ErrorServer' }
+
+  /admin/pesanan:
+    get:
+      tags: [Admin]
+      operationId: adminDaftarPesanan
+      summary: Pantau pesanan harian
+      parameters:
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/StatusPesanan' }, example: disiapkan }
+        - { name: hari, in: query, schema: { type: string, format: date }, example: '2026-01-07' }
+        - $ref: '#/components/parameters/Batas'
+        - $ref: '#/components/parameters/Lanjut'
+      responses:
+        '200':
+          description: Daftar pesanan beserta agregat.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, agregat, lanjut]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/PesananRingkas' }
+                  agregat:
+                    type: object
+                    required: [total, terlambat, batal]
+                    properties:
+                      total: { type: integer, minimum: 0 }
+                      terlambat: { type: integer, minimum: 0 }
+                      batal: { type: integer, minimum: 0 }
+                  lanjut: { type: [string, 'null'] }
+              example:
+                data: []
+                agregat: { total: 132, terlambat: 4, batal: 1 }
+                lanjut: null
+        '401': { $ref: '#/components/responses/Tidakterotorisasi' }
+        '403': { $ref: '#/components/responses/Dilarang' }
+        '429': { $ref: '#/components/responses/TerlaluBanyak' }
+        '500': { $ref: '#/components/responses/ErrorServer' }
+
+  /admin/pesanan/{kode}/alihkan:
+    post:
+      tags: [Admin]
+      operationId: adminAlihkanPesanan
+      summary: Alihkan pesanan ke vendor cadangan
+      description: Maksimal 2 kali per pesanan; lebih dari itu ditolak 422.
+      parameters:
+        - $ref: '#/components/parameters/KodePesanan'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id_vendor_cadangan]
+              properties:
+                id_vendor_cadangan: { type: string }
+            example: { id_vendor_cadangan: V-SARI-001 }
+      responses:
+        '200': { $ref: '#/components/responses/AksiAdminOk' }
+        '401': { $ref: '#/components/responses/Tidakterotorisasi' }
+        '403': { $ref: '#/components/responses/Dilarang' }
+        '404': { $ref: '#/components/responses/TidakDitemukan' }
+        '409': { $ref: '#/components/responses/Konflik' }
+        '422': { $ref: '#/components/responses/Validasi' }
+        '429': { $ref: '#/components/responses/TerlaluBanyak' }
+        '500': { $ref: '#/components/responses/ErrorServer' }
+
+  /admin/katalog-cermin:
+    get:
+      tags: [Admin]
+      operationId: adminKatalogCermin
+      summary: Status snapshot katalog cermin Lumbung
+      responses:
+        '200':
+          description: Status snapshot terakhir.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [diperbarui, sumber, jumlah_sku, status]
+                properties:
+                  diperbarui: { type: string, format: date-time }
+                  sumber: { type: string, const: lumbung }
+                  jumlah_sku: { type: integer, minimum: 0 }
+                  status: { type: string, examples: [ok] }
+              example: { diperbarui: '2026-01-07T04:00:00Z', sumber: lumbung, jumlah_sku: 48, status: ok }
+        '401': { $ref: '#/components/responses/Tidakterotorisasi' }
+        '403': { $ref: '#/components/responses/Dilarang' }
+        '429': { $ref: '#/components/responses/TerlaluBanyak' }
+        '500': { $ref: '#/components/responses/ErrorServer' }
+
+  /admin/katalog-cermin/sinkron:
+    post:
+      tags: [Admin]
+      operationId: adminSinkronKatalog
+      summary: Sinkron ulang katalog cermin
+      description: Memicu job sinkron-lumbung (selesai dalam 5 menit, retry 3 kali interval 30 detik). Dijadwalkan otomatis 04.00.
+      responses:
+        '200': { $ref: '#/components/responses/AksiAdminOk' }
+        '401': { $ref: '#/components/responses/Tidakterotorisasi' }
+        '403': { $ref: '#/components/responses/Dilarang' }
+        '409': { $ref: '#/components/responses/Konflik' }
+        '429': { $ref: '#/components/responses/TerlaluBanyak' }
+        '500': { $ref: '#/components/responses/ErrorServer' }
+
+  /sinyal/pedaree-stok:
+    post:
+      tags: [Integrasi]
+      operationId: terimaSinyalPedareeStok
+      summary: Terima sinyal stok Pedaree (pedaree.stok.v1)
+      description: |
+        Endpoint penerima kontrak bilateral `pedaree.stok.v1` (Pedaree → TitipO, TitipO satu-satunya konsumen). Bukan bagian registry 11 event Titeny.
+
+        - Jenis terkunci (3): `stok.menipis`, `stok.habis`, `kedaluwarsa.dekat`. Jenis lain ditolak `422 JENIS_SINYAL_TIDAK_DIKENAL`.
+        - Kunci idempoten konsumen: `item_id + tanggal`. Duplikat dijawab `200 {"status":"duplikat_diabaikan"}` (bukan galat). Produsen mengirim maksimal 1 per item per 24 jam.
+        - Sifat: **anjuran restock saja**. Sinyal menjadi daftar saran di aplikasi vendor dan bahan pertimbangan katalog; **tidak pernah membuat pesanan otomatis**. Relevansi anjuran 48 jam.
+        - `recipe_id` Pawonee boleh kosong dan hanya diteruskan untuk tampilan.
+      security:
+        - serviceKeyPedaree: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SinyalPedareeStok' }
+            example:
+              jenis: stok.menipis
+              item_id: ITM-CABAI-001
+              tanggal: '2026-10-14'
+              item: Cabai merah
+              sisa: 150
+              satuan: gram
+              kedaluwarsa: '2026-10-17'
+              recipe_id: null
+      responses:
+        '200':
+          description: Sinyal duplikat (kunci `item_id + tanggal` sudah ada); diabaikan tanpa efek.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, const: duplikat_diabaikan }
+        '201':
+          description: Sinyal dicatat sebagai anjuran restock (tanpa pesanan otomatis).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, const: dicatat_sebagai_anjuran }
+        '400': { $ref: '#/components/responses/Permintaan' }
+        '401': { $ref: '#/components/responses/Tidakterotorisasi' }
+        '403': { $ref: '#/components/responses/Dilarang' }
+        '422': { $ref: '#/components/responses/Validasi' }
+        '500': { $ref: '#/components/responses/ErrorServer' }
+
+webhooks:
+  eventPesanan:
+    post:
+      tags: [Integrasi]
+      operationId: eventPesanan
+      summary: Event pesanan keluar (outbox)
+      description: Event yang diterbitkan TitipO ke outbox dan diteruskan pipeline. Tercantum agar kontrak event versi 1 terdokumentasi.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EventPesanan' }
+      responses:
+        '200': { description: Event diterima konsumen. }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT beraudiens `titipo` dari auth Lumbung (RS256, verifikasi JWKS Lumbung). Klaim `role` ∈ vendor, household, admin. Audiens lain = 403.
+    serviceKeyPedaree:
+      type: apiKey
+      in: header
+      name: X-Service-Key
+      description: Service key least-privilege milik Pedaree, hanya berhak mengirim sinyal `pedaree.stok.v1`.
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: ULID 26 karakter dibuat klien. Pengiriman ulang dengan kunci sama mengembalikan hasil sama (200) tanpa rekaman ganda.
+      schema: { type: string, pattern: '^[0-9A-HJKMNP-TV-Z]{26}$' }
+      example: 01JMB2Z9KQ0ABCD1234567890A
+    KodePesanan:
+      name: kode
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/KodePesanan' }
+    IdVendor:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+      example: V-SARI-001
+    Batas:
+      name: batas
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+      description: Jumlah data per halaman (default 20, maksimal 50).
+    Lanjut:
+      name: lanjut
+      in: query
+      schema: { type: string }
+      description: Kode terakhir dari halaman sebelumnya.
+  schemas:
+    KodePesanan:
+      type: string
+      pattern: '^T-[0-9]{4}-[0-9]{6}$'
+      description: Kode tunggal dari pesan sampai fee cair.
+      examples: [T-2026-000112]
+    Rupiah:
+      type: integer
+      minimum: 0
+      description: Uang dalam rupiah, integer.
+    Gram:
+      type: integer
+      minimum: 1
+      description: Berat dalam gram, integer.
+    StatusPesanan:
+      type: string
+      enum: [menunggu_pembayaran, menunggu_konfirmasi, disiapkan, diserahkan, selesai, kedaluwarsa, dialihkan, dibatalkan_sistem, dibatalkan_vendor]
+    StatusVendor:
+      type: string
+      enum: [calon, aktif, prioritas, skors, keluar]
+    Satuan:
+      type: string
+      description: 13 satuan baku (KONTEKS-LINTAS-DIVISI §6).
+      enum: [gram, kg, ml, liter, sdm, sdt, pcs, siung, buah, ikat, batang, bonggol, lembar]
+    VendorRingkas:
+      type: object
+      required: [id, nama, jarak_km, rating, sisa_kuota, prioritas]
+      properties:
+        id: { type: string }
+        nama: { type: string }
+        jarak_km: { type: number, minimum: 0 }
+        rating: { type: number, minimum: 0, maximum: 5 }
+        sisa_kuota: { type: integer, minimum: 0 }
+        prioritas: { type: boolean }
+    VendorAdmin:
+      type: object
+      required: [id, nama, status]
+      properties:
+        id: { type: string }
+        nama: { type: string }
+        status: { $ref: '#/components/schemas/StatusVendor' }
+        skor_kebersihan: { type: integer, minimum: 0, maximum: 100 }
+        dokumen:
+          type: array
+          items: { type: string }
+    ItemKatalog:
+      type: object
+      required: [sku_lumbung, nama, harga_per_kg, stok_gram]
+      properties:
+        sku_lumbung: { type: string, examples: [LMB-BAYAM-001] }
+        nama: { type: string }
+        harga_per_kg: { $ref: '#/components/schemas/Rupiah' }
+        stok_gram: { type: integer, minimum: 0 }
+    Katalog:
+      type: object
+      required: [diperbarui, data]
+      properties:
+        diperbarui: { type: string, format: date-time }
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/ItemKatalog' }
+      example:
+        diperbarui: '2026-01-07T04:30:00Z'
+        data:
+          - { sku_lumbung: LMB-BAYAM-001, nama: Bayam, harga_per_kg: 9000, stok_gram: 50000 }
+          - { sku_lumbung: LMB-TELUR-001, nama: Telur, harga_per_kg: 29000, stok_gram: 30000 }
+    ItemPesananBaru:
+      type: object
+      required: [sku_lumbung, jumlah_gram]
+      properties:
+        sku_lumbung: { type: string }
+        jumlah_gram: { $ref: '#/components/schemas/Gram' }
+    PesananBaru:
+      type: object
+      required: [id, id_vendor, item]
+      properties:
+        id: { type: string, pattern: '^[0-9A-HJKMNP-TV-Z]{26}$', description: ULID pesanan dibuat klien. }
+        id_vendor: { type: string }
+        item:
+          type: array
+          minItems: 1
+          maxItems: 50
+          description: Maksimal 50 baris dan total maksimal 20.000 gram.
+          items: { $ref: '#/components/schemas/ItemPesananBaru' }
+    PesananDibuat:
+      type: object
+      required: [kode, total_bayar, kedaluwarsa_bayar]
+      properties:
+        kode: { $ref: '#/components/schemas/KodePesanan' }
+        total_bayar: { $ref: '#/components/schemas/Rupiah' }
+        kedaluwarsa_bayar: { type: string, format: date-time, description: Batas bayar QRIS (15 menit). }
+    PesananRingkas:
+      type: object
+      required: [kode, status, id_vendor, total_item, ongkir, total_bayar]
+      properties:
+        kode: { $ref: '#/components/schemas/KodePesanan' }
+        status: { $ref: '#/components/schemas/StatusPesanan' }
+        id_vendor: { type: string }
+        total_item: { $ref: '#/components/schemas/Rupiah' }
+        ongkir: { type: integer, const: 5000 }
+        total_bayar: { $ref: '#/components/schemas/Rupiah' }
+        jendela_serah: { type: string, examples: ['06.00-08.00'] }
+    SinyalPedareeStok:
+      type: object
+      required: [jenis, item_id, tanggal, item, sisa, satuan, kedaluwarsa]
+      properties:
+        jenis:
+          type: string
+          enum: [stok.menipis, stok.habis, kedaluwarsa.dekat]
+        item_id: { type: string, description: Bagian pertama kunci idempoten. }
+        tanggal: { type: string, format: date, description: Bagian kedua kunci idempoten (`item_id + tanggal`). }
+        item: { type: string }
+        sisa: { type: number, minimum: 0 }
+        satuan: { $ref: '#/components/schemas/Satuan' }
+        kedaluwarsa: { type: string, format: date }
+        recipe_id: { type: [string, 'null'], description: ID resep Pawonee; boleh kosong; hanya untuk tampilan. }
+    EventPesanan:
+      type: object
+      description: Event pesanan di outbox DB `titipo` (diteruskan pipeline). Membawa ULID, waktu, dan versi.
+      required: [event_id, jenis, occurred_at, schema_version]
+      properties:
+        event_id: { type: string, pattern: '^[0-9A-HJKMNP-TV-Z]{26}$' }
+        jenis:
+          type: string
+          enum: [pesanan.dibuat, pesanan.dibayar, pesanan.dikonfirmasi, pesanan.diserahkan, pesanan.dialihkan, fee.dicairkan, konflik.dicatat]
+        occurred_at: { type: string, format: date-time }
+        schema_version: { type: string, examples: ['1'] }
+        data: { type: object, additionalProperties: true }
+    AppError:
+      type: object
+      description: Galat baku.
+      required: [kode, pesan]
+      properties:
+        kode:
+          type: string
+          description: Kode galat mesin. Contoh KATALOG_KEDALUWARSA, STOK_KEDALUWARSA, JENIS_SINYAL_TIDAK_DIKENAL.
+          examples: [KATALOG_KEDALUWARSA]
+        pesan: { type: string }
+        detail: { type: object, additionalProperties: true }
+  responses:
+    Permintaan:
+      description: 400 — permintaan tidak valid (format/berkas salah).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AppError' }
+    Tidakterotorisasi:
+      description: 401 — token kedaluwarsa atau tidak ada; login ulang.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AppError' }
+    Dilarang:
+      description: 403 — peran ditolak atau audiens token bukan `titipo`.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AppError' }
+    TidakDitemukan:
+      description: 404 — sumber daya tidak ditemukan.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AppError' }
+    Konflik:
+      description: 409 — konflik, mis. katalog kedaluwarsa lebih dari 24 jam atau stok habis.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AppError' }
+          example: { kode: KATALOG_KEDALUWARSA, pesan: Snapshot katalog lebih dari 24 jam, detail: {} }
+    Validasi:
+      description: 422 — validasi gagal, mis. lebih dari 20 kg, lebih dari 50 baris, lewat 20.00, transisi status ilegal, alihkan lebih dari 2 kali.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AppError' }
+          example: { kode: BERAT_MELEBIHI_BATAS, pesan: Total berat melebihi 20 kg, detail: {} }
+    TerlaluBanyak:
+      description: 429 — melebihi 600 permintaan per menit per IP (admin).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AppError' }
+    ErrorServer:
+      description: 500 — galat internal.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AppError' }
+    AksiAdminOk:
+      description: Aksi admin berhasil dan dicatat aktornya.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [ok, id, dicatat_oleh]
+            properties:
+              ok: { type: boolean, const: true }
+              id: { type: string }
+              dicatat_oleh: { type: string }
+          example: { ok: true, id: V-BUDI-002, dicatat_oleh: admin@titipo.id }
